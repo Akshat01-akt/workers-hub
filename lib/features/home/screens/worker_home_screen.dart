@@ -53,6 +53,7 @@ class _WorkerHomeScreenState extends State<WorkerHomeScreen> {
         ),
       ),
       bottomNavigationBar: NavigationBar(
+        indicatorShape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         selectedIndex: _currentIndex,
         onDestinationSelected: (index) {
           setState(() {

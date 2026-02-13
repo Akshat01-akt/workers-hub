@@ -1,5 +1,8 @@
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:workers_hub/core/providers/theme_provider.dart';
 import 'package:workers_hub/core/services/auth_service.dart';
@@ -16,6 +19,9 @@ class WorkerProfileTab extends StatefulWidget {
 class _WorkerProfileTabState extends State<WorkerProfileTab> {
   final _formKey = GlobalKey<FormState>();
   bool _isEditing = false;
+  bool _isUploading = false;
+  String? _base64Image;
+  String? _authPhotoUrl;
 
   // Controllers
   late TextEditingController _nameController;
@@ -39,6 +45,7 @@ class _WorkerProfileTabState extends State<WorkerProfileTab> {
     final user = AuthService().currentUser;
     if (user != null) {
       _nameController.text = user.displayName ?? '';
+      _authPhotoUrl = user.photoURL;
 
       // Fetch additional data from Firestore
       final doc = await FirebaseFirestore.instance
@@ -53,7 +60,58 @@ class _WorkerProfileTabState extends State<WorkerProfileTab> {
               (data['skills'] as List<dynamic>?)?.join(', ') ?? '';
           _experienceController.text = data['experience'] ?? '';
           _rateController.text = data['hourlyRate']?.toString() ?? '';
+          // Load base64 image if exists
+          if (data['base64Image'] != null) {
+            _base64Image = data['base64Image'];
+          }
         });
+      }
+    }
+  }
+
+  Future<void> _pickAndSaveImage() async {
+    final picker = ImagePicker();
+    // Pick with compression to avoid Firestore 1MB limit
+    final XFile? image = await picker.pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 512,
+      maxHeight: 512,
+      imageQuality: 70,
+    );
+
+    if (image == null) return;
+
+    setState(() => _isUploading = true);
+
+    try {
+      final user = AuthService().currentUser;
+      if (user == null) return;
+
+      final bytes = await File(image.path).readAsBytes();
+      final String base64String = base64Encode(bytes);
+
+      // Update Firestore directly (No Storage Bucket)
+      await FirebaseFirestore.instance
+          .collection('workers')
+          .doc(user.uid)
+          .update({'base64Image': base64String});
+
+      setState(() {
+        _base64Image = base64String;
+        _isUploading = false;
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Profile picture updated locally!')),
+        );
+      }
+    } catch (e) {
+      setState(() => _isUploading = false);
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error saving image: $e')));
       }
     }
   }
@@ -112,11 +170,18 @@ class _WorkerProfileTabState extends State<WorkerProfileTab> {
     final themeProvider = Provider.of<ThemeProvider>(context);
     final isDark = themeProvider.isDarkMode;
 
+    ImageProvider? backgroundImage;
+    if (_base64Image != null) {
+      backgroundImage = MemoryImage(base64Decode(_base64Image!));
+    } else if (_authPhotoUrl != null) {
+      backgroundImage = NetworkImage(_authPhotoUrl!);
+    }
+
     return CustomScrollView(
       slivers: [
         // Animated Header
         SliverAppBar(
-          expandedHeight: 250.0,
+          expandedHeight: 280.0,
           floating: false,
           pinned: true,
           flexibleSpace: FlexibleSpaceBar(
@@ -130,29 +195,106 @@ class _WorkerProfileTabState extends State<WorkerProfileTab> {
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
                       colors: isDark
-                          ? [Colors.black, const Color(0xFF333333)]
-                          : [Colors.blue.shade400, Colors.purple.shade400],
+                          ? [
+                              const Color(0xFF2C3E50),
+                              const Color(0xFF000000),
+                            ] // Elegant Dark
+                          : [
+                              const Color(0xFF6A11CB),
+                              const Color(0xFF2575FC),
+                            ], // Modern Blue-Purple
+                    ),
+                  ),
+                ),
+                // Decorative circles
+                Positioned(
+                  top: -50,
+                  right: -50,
+                  child: Container(
+                    width: 200,
+                    height: 200,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.white.withOpacity(0.1),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  bottom: -30,
+                  left: -30,
+                  child: Container(
+                    width: 150,
+                    height: 150,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.white.withOpacity(0.1),
                     ),
                   ),
                 ),
                 Center(
-                  child:
-                      CircleAvatar(
-                        radius: 60,
-                        backgroundColor: Colors.white,
+                  child: Stack(
+                    children: [
+                      Container(
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 4),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.2),
+                              blurRadius: 10,
+                              offset: const Offset(0, 5),
+                            ),
+                          ],
+                        ),
                         child: CircleAvatar(
-                          radius: 56,
-                          child: Text(
-                            _nameController.text.isNotEmpty
-                                ? _nameController.text[0].toUpperCase()
-                                : 'U',
-                            style: const TextStyle(fontSize: 40),
-                          ),
+                          radius: 64,
+                          backgroundColor: Colors.grey.shade200,
+                          backgroundImage: backgroundImage,
+                          child: backgroundImage == null
+                              ? Text(
+                                  _nameController.text.isNotEmpty
+                                      ? _nameController.text[0].toUpperCase()
+                                      : 'U',
+                                  style: const TextStyle(
+                                    fontSize: 40,
+                                    color: Colors.grey,
+                                  ),
+                                )
+                              : null,
                         ),
                       ).animate().scale(
                         duration: 600.ms,
                         curve: Curves.easeOutBack,
                       ),
+                      Positioned(
+                        bottom: 0,
+                        right: 0,
+                        child: GestureDetector(
+                          onTap: _pickAndSaveImage,
+                          child: Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: const BoxDecoration(
+                              color: Colors.white,
+                              shape: BoxShape.circle,
+                            ),
+                            child: _isUploading
+                                ? const SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(
+                                    Icons.camera_alt,
+                                    color: Colors.blueAccent,
+                                    size: 20,
+                                  ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
