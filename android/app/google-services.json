@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "620598921886",
+    "project_id": "workers-hub-4fd68",
+    "storage_bucket": "workers-hub-4fd68.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:620598921886:android:20edaa6d8d7a27f975898f",
+        "android_client_info": {
+          "package_name": "com.example.workers_hub"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCgHEkR5ZfW-TC5aFudNnGEZcolxeEe1iU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
