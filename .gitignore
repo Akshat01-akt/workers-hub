@@ -52,5 +52,7 @@ backend/.env
 # Firebase Config (Optional to ignore, but good for public repos)
 google-services.json
 android/app/google-services.json
+android/app/google-services\ .json
+lib/firebase_options.dart
 
 
