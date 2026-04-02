@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:workers_hub/features/onboarding/onboarding_screen.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:workers_hub/features/auth/screens/role_based_home.dart';
+import 'package:firebase_core/firebase_core.dart';
+import '../../firebase_options.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -13,11 +17,49 @@ class _SplashScreenState extends State<SplashScreen> {
   @override
   void initState() {
     super.initState();
-    _navigateToOnboarding();
+    _handleNavigation();
   }
-  Future<void> _navigateToOnboarding() async {
-    await Future.delayed(const Duration(seconds: 3));
-    if (mounted) {
+
+  Future<void> _handleNavigation() async {
+    // 1. Start the minimum duration timer
+    final minDurationFuture = Future.delayed(const Duration(seconds: 4));
+
+    // 2. Initialize Firebase
+    try {
+      await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform,
+      );
+    } catch (e) {
+      // Fallback for initialization error or if already initialized
+      try {
+        if (Firebase.apps.isEmpty) {
+          await Firebase.initializeApp();
+        }
+      } catch (e2) {
+        debugPrint('Firebase init failed: $e2');
+      }
+    }
+
+    // 3. Wait for the minimum duration to ensure splash is seen
+    await minDurationFuture;
+
+    if (!mounted) return;
+
+    // 4. Check Auth State and Navigate
+    final User? currentUser = FirebaseAuth.instance.currentUser;
+
+    if (currentUser != null) {
+      Navigator.pushReplacement(
+        context,
+        PageRouteBuilder(
+          transitionDuration: const Duration(milliseconds: 800),
+          pageBuilder: (_, __, ___) => const RoleBasedHome(),
+          transitionsBuilder: (_, animation, __, child) {
+            return FadeTransition(opacity: animation, child: child);
+          },
+        ),
+      );
+    } else {
       Navigator.pushReplacement(
         context,
         PageRouteBuilder(

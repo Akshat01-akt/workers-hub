@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:workers_hub/core/services/saved_jobs_service.dart';
 import 'package:workers_hub/core/theme/app_theme.dart';
 
 class JobCard extends StatelessWidget {
+  final String jobId;
   final String title;
   final String contractorName;
   final String location;
@@ -12,6 +14,7 @@ class JobCard extends StatelessWidget {
 
   const JobCard({
     super.key,
+    required this.jobId,
     required this.title,
     required this.contractorName,
     required this.location,
@@ -29,7 +32,7 @@ class JobCard extends StatelessWidget {
         margin: const EdgeInsets.only(bottom: 16),
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: Theme.of(context).cardColor,
           borderRadius: BorderRadius.circular(16),
           boxShadow: [
             BoxShadow(
@@ -66,22 +69,44 @@ class JobCard extends StatelessWidget {
                     ],
                   ),
                 ),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: AppTheme.primaryColor.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    '\u20B9${hourlyRate.toStringAsFixed(0)}/hr',
-                    style: const TextStyle(
-                      color: AppTheme.primaryDark,
-                      fontWeight: FontWeight.bold,
+                // ── Rate badge + Bookmark ─────────────────────────
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppTheme.primaryColor.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        '₹${hourlyRate.toStringAsFixed(0)}/hr',
+                        style: const TextStyle(
+                          color: AppTheme.primaryDark,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                     ),
-                  ),
+                    const SizedBox(width: 4),
+                    StreamBuilder<Set<String>>(
+                      stream: SavedJobsService().getSavedJobIds(),
+                      builder: (context, snapshot) {
+                        final saved = snapshot.data?.contains(jobId) ?? false;
+                        return IconButton(
+                          padding: EdgeInsets.zero,
+                          visualDensity: VisualDensity.compact,
+                          icon: Icon(
+                            saved ? Icons.bookmark : Icons.bookmark_border,
+                            color: saved ? AppTheme.primaryColor : Colors.grey,
+                            size: 22,
+                          ),
+                          onPressed: () => SavedJobsService().toggleSave(jobId),
+                        );
+                      },
+                    ),
+                  ],
                 ),
               ],
             ),

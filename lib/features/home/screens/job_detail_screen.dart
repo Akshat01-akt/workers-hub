@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:workers_hub/core/services/auth_service.dart';
+import 'package:flutter_animate/flutter_animate.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:workers_hub/core/services/job_service.dart';
+import 'package:workers_hub/core/services/auth_service.dart';
 import 'package:workers_hub/core/theme/app_theme.dart';
+import 'package:workers_hub/core/utils/app_snackbar.dart';
+import 'package:workers_hub/features/home/widgets/job_map_widget.dart';
 
 class JobDetailScreen extends StatefulWidget {
   final String jobId;
@@ -33,26 +37,37 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
         jobData: widget.jobData,
       );
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Application submitted successfully!'),
-            backgroundColor: Colors.green,
-          ),
+        AppSnackbar.show(
+          context,
+          'Application submitted successfully!',
+          type: SnackType.success,
         );
         Navigator.pop(context);
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(e.toString().replaceAll('Exception: ', '')),
-            backgroundColor: Colors.redAccent,
-          ),
+        AppSnackbar.show(
+          context,
+          e.toString().replaceAll('Exception: ', ''),
+          type: SnackType.error,
         );
       }
     } finally {
+      if (mounted) setState(() => _isApplying = false);
+    }
+  }
+
+  Future<void> _callPhone(String phone) async {
+    final uri = Uri(scheme: 'tel', path: phone);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri);
+    } else {
       if (mounted) {
-        setState(() => _isApplying = false);
+        AppSnackbar.show(
+          context,
+          'Cannot place call on this device',
+          type: SnackType.warning,
+        );
       }
     }
   }
@@ -60,6 +75,9 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final job = widget.jobData;
+    final contractorPhone = job['contractor_phone'] as String?;
+    final lat = (job['lat'] as num?)?.toDouble();
+    final lng = (job['lng'] as num?)?.toDouble();
 
     return Scaffold(
       appBar: AppBar(
@@ -82,27 +100,53 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  job['companyName'] ?? 'Unknown Company',
+                  job['company_name'] ?? 'Unknown Company',
                   style: Theme.of(
                     context,
                   ).textTheme.titleLarge?.copyWith(color: Colors.grey.shade600),
                 ),
                 const SizedBox(height: 24),
 
-                // Key Details
-                Row(
+                // Key Detail Chips
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 8,
                   children: [
                     _buildDetailChip(
                       Icons.location_on,
                       job['location'] ?? 'Remote',
                     ),
-                    const SizedBox(width: 12),
                     _buildDetailChip(
                       Icons.currency_rupee,
-                      '${job['hourlyRate']}/hr',
+                      '${job['hourly_rate']}/hr',
                     ),
+                    if (job['category'] != null)
+                      _buildDetailChip(
+                        Icons.category_outlined,
+                        job['category'],
+                      ),
                   ],
                 ),
+
+                // Call Contractor
+                if (contractorPhone != null && contractorPhone.isNotEmpty) ...[
+                  const SizedBox(height: 20),
+                  OutlinedButton.icon(
+                    onPressed: () => _callPhone(contractorPhone),
+                    icon: const Icon(Icons.phone, color: Colors.green),
+                    label: Text(
+                      'Call Contractor ($contractorPhone)',
+                      style: const TextStyle(color: Colors.green),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.green),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
+                    ),
+                  ).animate().fadeIn(delay: 100.ms),
+                ],
 
                 const SizedBox(height: 32),
                 const Divider(),
@@ -122,6 +166,16 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
                     context,
                   ).textTheme.bodyLarge?.copyWith(height: 1.6),
                 ),
+
+                // Map Section
+                if (lat != null && lng != null && lat != 0.0) ...[
+                  const SizedBox(height: 32),
+                  JobMapWidget(
+                    lat: lat,
+                    lng: lng,
+                    label: job['location'] ?? 'Site',
+                  ).animate().fadeIn(delay: 200.ms),
+                ],
 
                 // Bottom padding for FAB
                 const SizedBox(height: 100),

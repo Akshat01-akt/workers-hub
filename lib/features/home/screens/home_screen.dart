@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:workers_hub/core/services/auth_service.dart';
+import 'package:workers_hub/core/services/database_service.dart';
 import 'package:workers_hub/core/theme/app_theme.dart';
 import 'package:workers_hub/features/auth/screens/sign_in_screen.dart';
 
@@ -32,11 +32,8 @@ class HomeScreen extends StatelessWidget {
       ),
       body: user == null
           ? const Center(child: Text('Not signed in'))
-          : FutureBuilder<DocumentSnapshot>(
-              future: FirebaseFirestore.instance
-                  .collection('users')
-                  .doc(user.uid)
-                  .get(),
+          : FutureBuilder<Map<String, dynamic>?>(
+              future: DatabaseService().getProfile(user.uid),
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());
@@ -46,13 +43,13 @@ class HomeScreen extends StatelessWidget {
                   return const Center(child: Text('Error loading profile'));
                 }
 
-                if (!snapshot.hasData || !snapshot.data!.exists) {
+                if (!snapshot.hasData || snapshot.data == null) {
                   return const Center(child: Text('User profile not found'));
                 }
 
-                final  userData = snapshot.data!.data() as Map<String, dynamic>;
+                final userData = snapshot.data!;
                 final userName = userData['name'] ?? 'User';
-                final userEmail = userData['email'] ?? user.email;
+                final userEmail = userData['email'] ?? user.email ?? '';
                 final userRole = userData['role'] ?? 'Worker';
 
                 return Center(
@@ -65,7 +62,9 @@ class HomeScreen extends StatelessWidget {
                           radius: 50,
                           backgroundColor: AppTheme.secondaryColor,
                           child: Text(
-                            userName[0].toUpperCase(),
+                            userName.isNotEmpty
+                                ? userName[0].toUpperCase()
+                                : 'U',
                             style: const TextStyle(
                               fontSize: 40,
                               color: Colors.white,

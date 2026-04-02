@@ -1,13 +1,18 @@
-import 'dart:convert';
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:workers_hub/core/providers/theme_provider.dart';
 import 'package:workers_hub/core/services/auth_service.dart';
+import 'package:workers_hub/core/services/database_service.dart';
+import 'package:workers_hub/core/services/rating_service.dart';
+import 'package:workers_hub/core/services/storage_service.dart';
 import 'package:workers_hub/features/auth/screens/sign_in_screen.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:workers_hub/features/home/screens/earnings_screen.dart';
+import 'package:workers_hub/features/home/widgets/portfolio_gallery_widget.dart';
 
 class WorkerProfileTab extends StatefulWidget {
   const WorkerProfileTab({super.key});
@@ -18,10 +23,17 @@ class WorkerProfileTab extends StatefulWidget {
 
 class _WorkerProfileTabState extends State<WorkerProfileTab> {
   final _formKey = GlobalKey<FormState>();
+  final DatabaseService _db = DatabaseService();
+  final StorageService _storage = StorageService();
+
   bool _isEditing = false;
   bool _isUploading = false;
-  String? _base64Image;
-  String? _authPhotoUrl;
+  bool _isAvailable = true;
+  String? _photoUrl;
+  double _profileCompletion = 0;
+  double _averageRating = 0;
+  int _ratingCount = 0;
+  List<String> _portfolio = [];
 
   // Controllers
   late TextEditingController _nameController;
@@ -29,6 +41,8 @@ class _WorkerProfileTabState extends State<WorkerProfileTab> {
   late TextEditingController _skillsController;
   late TextEditingController _experienceController;
   late TextEditingController _rateController;
+
+  StreamSubscription<DocumentSnapshot>? _userSubscription;
 
   @override
   void initState() {
@@ -38,45 +52,69 @@ class _WorkerProfileTabState extends State<WorkerProfileTab> {
     _skillsController = TextEditingController();
     _experienceController = TextEditingController();
     _rateController = TextEditingController();
-    _loadUserData();
+    _initUserListener();
   }
 
-  void _loadUserData() async {
+  void _initUserListener() {
     final user = AuthService().currentUser;
     if (user != null) {
+      // Set initial Auth data
       _nameController.text = user.displayName ?? '';
-      _authPhotoUrl = user.photoURL;
 
-      // Fetch additional data from Firestore
-      final doc = await FirebaseFirestore.instance
-          .collection('workers')
+      // Listen to Firestore Profile updates
+      _userSubscription = FirebaseFirestore.instance
+          .collection('users')
           .doc(user.uid)
-          .get();
-      if (doc.exists) {
-        final data = doc.data()!;
-        setState(() {
-          _phoneController.text = data['phoneNumber'] ?? '';
-          _skillsController.text =
-              (data['skills'] as List<dynamic>?)?.join(', ') ?? '';
-          _experienceController.text = data['experience'] ?? '';
-          _rateController.text = data['hourlyRate']?.toString() ?? '';
-          // Load base64 image if exists
-          if (data['base64Image'] != null) {
-            _base64Image = data['base64Image'];
-          }
-        });
-      }
+          .snapshots()
+          .listen(
+            (snapshot) {
+              if (snapshot.exists && mounted) {
+                final profile = snapshot.data()!;
+                setState(() {
+                  if (!_isEditing) {
+                    _nameController.text = profile['name'] ?? '';
+                    _phoneController.text = profile['phone'] ?? '';
+                    _skillsController.text =
+                        (profile['skills'] as List<dynamic>?)?.join(', ') ?? '';
+                    _experienceController.text = profile['experience'] ?? '';
+                    _rateController.text =
+                        profile['hourly_rate']?.toString() ?? '';
+                  }
+                  _photoUrl = profile['photo_url'];
+                  _isAvailable = profile['is_available'] ?? true;
+                  _portfolio = List<String>.from(profile['portfolio'] ?? []);
+                  // Compute rating
+                  _averageRating = RatingService().computeAverage(profile);
+                  _ratingCount =
+                      (profile['rating_count'] as num?)?.toInt() ?? 0;
+                  // Compute profile completion
+                  int filled = 0;
+                  const total = 5;
+                  if ((profile['name'] ?? '').toString().isNotEmpty) filled++;
+                  if ((profile['phone'] ?? '').toString().isNotEmpty) filled++;
+                  if ((profile['skills'] as List?)?.isNotEmpty == true)
+                    filled++;
+                  if ((profile['experience'] ?? '').toString().isNotEmpty)
+                    filled++;
+                  if ((profile['hourly_rate']) != null) filled++;
+                  _profileCompletion = filled / total;
+                });
+              }
+            },
+            onError: (e) {
+              debugPrint('Error listening to profile updates: $e');
+            },
+          );
     }
   }
 
   Future<void> _pickAndSaveImage() async {
     final picker = ImagePicker();
-    // Pick with compression to avoid Firestore 1MB limit
     final XFile? image = await picker.pickImage(
       source: ImageSource.gallery,
-      maxWidth: 512,
-      maxHeight: 512,
-      imageQuality: 70,
+      maxWidth: 800, // Reasonable size for profile
+      maxHeight: 800,
+      imageQuality: 80,
     );
 
     if (image == null) return;
@@ -87,23 +125,27 @@ class _WorkerProfileTabState extends State<WorkerProfileTab> {
       final user = AuthService().currentUser;
       if (user == null) return;
 
-      final bytes = await File(image.path).readAsBytes();
-      final String base64String = base64Encode(bytes);
+      // 1. Upload to Firebase Storage
+      final File file = File(image.path);
+      final String publicUrl = await _storage.uploadProfileImage(
+        file,
+        user.uid,
+      );
 
-      // Update Firestore directly (No Storage Bucket)
-      await FirebaseFirestore.instance
-          .collection('workers')
-          .doc(user.uid)
-          .update({'base64Image': base64String});
+      // 2. Update Profile with URL
+      await _db.updateProfile(uid: user.uid, photoUrl: publicUrl);
+
+      // 3. Update Firebase Auth Photo URL (for consistency)
+      await user.updatePhotoURL(publicUrl);
 
       setState(() {
-        _base64Image = base64String;
+        _photoUrl = publicUrl;
         _isUploading = false;
       });
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Profile picture updated locally!')),
+          const SnackBar(content: Text('Profile picture updated!')),
         );
       }
     } catch (e) {
@@ -118,6 +160,7 @@ class _WorkerProfileTabState extends State<WorkerProfileTab> {
 
   @override
   void dispose() {
+    _userSubscription?.cancel();
     _nameController.dispose();
     _phoneController.dispose();
     _skillsController.dispose();
@@ -135,18 +178,17 @@ class _WorkerProfileTabState extends State<WorkerProfileTab> {
           await user.updateDisplayName(_nameController.text);
 
           // Update Firestore
-          await FirebaseFirestore.instance
-              .collection('workers')
-              .doc(user.uid)
-              .update({
-                'phoneNumber': _phoneController.text,
-                'skills': _skillsController.text
-                    .split(',')
-                    .map((e) => e.trim())
-                    .toList(),
-                'experience': _experienceController.text,
-                'hourlyRate': double.tryParse(_rateController.text) ?? 0.0,
-              });
+          await _db.updateProfile(
+            uid: user.uid,
+            name: _nameController.text,
+            phone: _phoneController.text,
+            skills: _skillsController.text
+                .split(',')
+                .map((e) => e.trim())
+                .toList(),
+            experience: _experienceController.text,
+            hourlyRate: double.tryParse(_rateController.text),
+          );
 
           setState(() => _isEditing = false);
           if (mounted) {
@@ -171,10 +213,8 @@ class _WorkerProfileTabState extends State<WorkerProfileTab> {
     final isDark = themeProvider.isDarkMode;
 
     ImageProvider? backgroundImage;
-    if (_base64Image != null) {
-      backgroundImage = MemoryImage(base64Decode(_base64Image!));
-    } else if (_authPhotoUrl != null) {
-      backgroundImage = NetworkImage(_authPhotoUrl!);
+    if (_photoUrl != null && _photoUrl!.isNotEmpty) {
+      backgroundImage = NetworkImage(_photoUrl!);
     }
 
     return CustomScrollView(
@@ -184,6 +224,7 @@ class _WorkerProfileTabState extends State<WorkerProfileTab> {
           expandedHeight: 280.0,
           floating: false,
           pinned: true,
+          centerTitle: true,
           flexibleSpace: FlexibleSpaceBar(
             title: _isEditing ? const SizedBox() : Text(_nameController.text),
             background: Stack(
@@ -266,6 +307,20 @@ class _WorkerProfileTabState extends State<WorkerProfileTab> {
                         duration: 600.ms,
                         curve: Curves.easeOutBack,
                       ),
+                      // Star rating below avatar
+                      if (!_isEditing && _ratingCount > 0)
+                        Positioned(
+                          bottom: -8,
+                          left: 0,
+                          right: 0,
+                          child: Center(
+                            child: StarRating(
+                              rating: _averageRating,
+                              count: _ratingCount,
+                              size: 16,
+                            ),
+                          ),
+                        ),
                       Positioned(
                         bottom: 0,
                         right: 0,
@@ -301,10 +356,16 @@ class _WorkerProfileTabState extends State<WorkerProfileTab> {
           ),
           actions: [
             IconButton(
-              icon: Icon(_isEditing ? Icons.save : Icons.edit),
-              onPressed: _isEditing
-                  ? _saveProfile
-                  : () => setState(() => _isEditing = true),
+              icon: Icon(_isEditing ? Icons.close : Icons.edit),
+              onPressed: () {
+                setState(() {
+                  _isEditing = !_isEditing;
+                  // Reset fields if cancelling
+                  if (!_isEditing) {
+                    _initUserListener();
+                  }
+                });
+              },
             ),
           ],
         ),
@@ -360,8 +421,150 @@ class _WorkerProfileTabState extends State<WorkerProfileTab> {
                   ),
 
                   const SizedBox(height: 32),
+
+                  // ── Portfolio Gallery ──────────────────────────────────
+                  if (!_isEditing) ...[
+                    _buildSectionHeader('Portfolio'),
+                    const SizedBox(height: 12),
+                    PortfolioGalleryWidget(
+                      imageUrls: _portfolio,
+                      isEditable: true,
+                    ).animate().fadeIn(duration: 400.ms),
+                    const SizedBox(height: 32),
+                  ],
+
+                  // ── Profile Completion ─────────────────────────────────
+                  if (!_isEditing) ...[
+                    _buildSectionHeader('Profile Completion'),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: LinearProgressIndicator(
+                              value: _profileCompletion,
+                              minHeight: 10,
+                              backgroundColor: Colors.grey.shade200,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                _profileCompletion == 1.0
+                                    ? Colors.green
+                                    : Theme.of(context).colorScheme.primary,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          '${(_profileCompletion * 100).toInt()}%',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ).animate().fadeIn(duration: 400.ms),
+                    if (_profileCompletion < 1.0) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        'Complete your profile to attract more contractors.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey.shade500,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 32),
+                  ],
+
                   _buildSectionHeader('Settings'),
                   const SizedBox(height: 8),
+
+                  // ── Availability Toggle ────────────────────────────────
+                  Card(
+                    elevation: 0,
+                    color: _isAvailable
+                        ? Colors.green.withOpacity(0.08)
+                        : Colors.grey.withOpacity(0.08),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: SwitchListTile(
+                      title: Text(
+                        _isAvailable ? 'Open to Work' : 'Not Available',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: _isAvailable ? Colors.green : Colors.grey,
+                        ),
+                      ),
+                      subtitle: Text(
+                        _isAvailable
+                            ? 'Contractors can see you are available'
+                            : 'You are hidden from contractor searches',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                      secondary: Icon(
+                        _isAvailable
+                            ? Icons.check_circle_outline
+                            : Icons.cancel_outlined,
+                        color: _isAvailable ? Colors.green : Colors.grey,
+                      ),
+                      value: _isAvailable,
+                      activeColor: Colors.green,
+                      onChanged: (value) async {
+                        setState(() => _isAvailable = value);
+                        final user = AuthService().currentUser;
+                        if (user != null) {
+                          await DatabaseService().updateProfile(
+                            uid: user.uid,
+                            isAvailable: value,
+                          );
+                        }
+                      },
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                      ),
+                    ),
+                  ).animate().fadeIn(duration: 300.ms),
+                  const SizedBox(height: 12),
+
+                  // ── Earnings Button ────────────────────────────────────
+                  if (!_isEditing)
+                    ListTile(
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const EarningsScreen(),
+                          ),
+                        );
+                      },
+                      leading: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.green.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(
+                          Icons.account_balance_wallet_outlined,
+                          color: Colors.green,
+                        ),
+                      ),
+                      title: const Text(
+                        'My Earnings',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      subtitle: const Text(
+                        'View accepted jobs & estimated pay',
+                      ),
+                      trailing: const Icon(Icons.chevron_right),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        side: BorderSide(color: Colors.grey.shade200),
+                      ),
+                    ).animate().fadeIn(duration: 400.ms),
+                  const SizedBox(height: 12),
+
                   SwitchListTile(
                     title: const Text(
                       'Dark Mode',
@@ -378,6 +581,24 @@ class _WorkerProfileTabState extends State<WorkerProfileTab> {
                     contentPadding: EdgeInsets.zero,
                   ),
                   const SizedBox(height: 16),
+
+                  if (_isEditing) ...[
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: _saveProfile,
+                        icon: const Icon(Icons.check),
+                        label: const Text('Update Profile'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                      ),
+                    ).animate().fadeIn(),
+                    const SizedBox(height: 16),
+                  ],
+
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton.icon(

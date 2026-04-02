@@ -1,9 +1,9 @@
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:workers_hub/core/services/database_service.dart';
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final DatabaseService _db = DatabaseService();
 
   // Stream to listen for authentication changes
   Stream<User?> get authStateChanges => _auth.authStateChanges();
@@ -13,16 +13,7 @@ class AuthService {
 
   // Sign In
   Future<void> signIn({required String email, required String password}) async {
-    UserCredential result = await _auth.signInWithEmailAndPassword(
-      email: email,
-      password: password,
-    );
-
-    if (result.user != null) {
-      await _firestore.collection('users').doc(result.user!.uid).update({
-        'lastLogin': FieldValue.serverTimestamp(),
-      });
-    }
+    await _auth.signInWithEmailAndPassword(email: email, password: password);
   }
 
   // Sign Up
@@ -35,24 +26,15 @@ class AuthService {
       email: email,
       password: password,
     );
+
     User? user = result.user;
-
     if (user != null) {
-      // Create user document in Firestore
-      await _firestore.collection('users').doc(user.uid).set({
-        'uid': user.uid,
-        'name': name,
-        'email': email,
-        'createdAt': FieldValue.serverTimestamp(),
-        'role': 'new', // Default role, forcing selection later
-        'profileImage': null,
-      });
-
-      // Update display name
       await user.updateDisplayName(name);
 
-      // Sign out immediately to force user to sign in manually
-      await signOut();
+      // Profile creation happens when the user selects a role
+      // in the RoleSelectionScreen/RegistrationScreens.
+
+      await signOut(); // Force re-login
     }
   }
 
@@ -66,43 +48,62 @@ class AuthService {
     await _auth.sendPasswordResetEmail(email: email);
   }
 
-  // Update User Role
-  Future<void> updateUserRole({
-    required String uid,
-    required String role,
-  }) async {
-    await _firestore.collection('users').doc(uid).update({'role': role});
-  }
-
-  // Create Worker Profile
+  // Create Worker Profile (stored in Firestore)
   Future<void> createWorkerProfile({
     required String uid,
     required Map<String, dynamic> data,
   }) async {
-    data['createdAt'] = FieldValue.serverTimestamp();
-    data['uid'] = uid;
+    final user = currentUser;
+    final email = user?.email ?? '';
+    final name = data['name'] ?? user?.displayName ?? '';
 
-    await _firestore.collection('workers').doc(uid).set(data);
-    await updateUserRole(uid: uid, role: 'worker');
+    // Create base profile in Firestore
+    await _db.createProfile(uid: uid, email: email, role: 'worker', name: name);
+
+    // Update with additional details
+    await _db.updateProfile(
+      uid: uid,
+      phone: data['phone'] ?? data['phoneNumber'],
+      skills: data['skill'] != null ? [data['skill'] as String] : null,
+      experience: data['experience'],
+      hourlyRate: (data['hourlyRate'] as num?)?.toDouble(),
+      location: data['location'],
+    );
   }
 
-  // Create Contractor Profile
+  // Create Contractor Profile (stored in Firestore)
   Future<void> createContractorProfile({
     required String uid,
     required Map<String, dynamic> data,
   }) async {
-    data['createdAt'] = FieldValue.serverTimestamp();
-    data['uid'] = uid;
+    final user = currentUser;
+    final email = user?.email ?? '';
+    final name = data['name'] ?? user?.displayName ?? '';
 
-    await _firestore.collection('contractors').doc(uid).set(data);
-    await updateUserRole(uid: uid, role: 'contractor');
+    await _db.createProfile(
+      uid: uid,
+      email: email,
+      role: 'contractor',
+      name: name,
+    );
+
+    await _db.updateProfile(
+      uid: uid,
+      phone: data['phone'] ?? data['phoneNumber'],
+      companyName: data['companyName'],
+      location: data['location'],
+    );
   }
 
-  // Get User Role
+  // Get User Role from Firestore
   Future<String?> getUserRole(String uid) async {
-    DocumentSnapshot doc = await _firestore.collection('users').doc(uid).get();
-    if (doc.exists) {
-      return (doc.data() as Map<String, dynamic>)['role'] as String?;
+    try {
+      final profile = await _db.getProfile(uid);
+      if (profile != null) {
+        return profile['role'] as String?;
+      }
+    } catch (e) {
+      return null;
     }
     return null;
   }
